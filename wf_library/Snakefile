@@ -24,7 +24,7 @@ rule msfragger:
     resources:
         mem_mb=lambda wildcards, attempt: attempt * 8192
     shell:
-        "java -Xmx8G -jar MSFragger-20171106.jar fragger.params {input.mzxml}"
+        "java -Xmx8G -jar $(which MSFragger-20171106.jar) fragger.params {input.mzxml}"
 
 rule peptideprophet:
     input:
@@ -35,9 +35,19 @@ rule peptideprophet:
     shell:
         "InteractParser {output} {input.pepxml} -D{input.fasta} && PeptideProphetParser {output} ACCMASS NONPARAM PPM DECOY=DECOY_"
 
+rule ptmprophet:
+    input:
+        mzxml = "../results/library/{run}.mzXML",
+        pepxml = "../results/library/interact-{run}.pepXML"
+    output:
+        mzxml = "../wf_library/{run}.mzXML",
+        pepxml = "../results/library/ptminteract-{run}.pepXML"
+    shell:
+        "ln -s {input.mzxml} {output.mzxml} && PTMProphetParser MZTOL=0.025 {input.pepxml} {output.pepxml}"
+
 rule iprophet:
     input:
-        "../results/library/interact-{run}.pepXML"
+        "../results/library/ptminteract-{run}.pepXML"
     output:
         "../results/library/iprophet-{run}.pepXML"
     threads: 1
@@ -51,7 +61,7 @@ rule spectrast_import:
         name = temp(touch("../results/library/rtn-{run}")),
         splib = "../results/library/rtn-{run}.splib"
     shell:
-        "spectrast -cN{output.name} -c_IRT../data_library/cirtkit.txt -c_IRR -cq0.01 -c_RDYDECOY {input}"
+        "spectrast -cN{output.name} -c_IRT../data_library/irtkit.txt -c_IRR -cq0.01 -c_RDYDECOY {input}"
 
 rule spectrast_consensus:
     input:
@@ -68,15 +78,16 @@ rule spectrast_filter:
     output:
         "../results/library/proteotypic.mrm"
     shell:
-        "spectrast -cQ20 -cN../results/library/proteotypic -cM -cu -cd -cD{input.fasta} {input.splib}"
+        "spectrast -cQ20 -cN../results/library/proteotypic -cf\"Mods =~ Phospho\" -cM -cu -cd -cD{input.fasta} {input.splib}"
 
 rule generate_swath_assays:
     input:
-        rules.spectrast_filter.output
+        mrm = rules.spectrast_filter.output,
+        unimod = "unimod_phospho.xml"
     output:
         temp("../results/library/assays.TraML")
     shell:
-        "OpenSwathAssayGenerator -in {input} -out {output}"
+        "OpenSwathAssayGenerator -in {input.mrm} -out {output} -enable_ipf -unimod_file {input.unimod} -disable_identification_ms2_precursors -disable_identification_specific_losses"
 
 rule generate_swath_decoys:
     input:
@@ -93,3 +104,4 @@ rule generate_pqp:
         "../data_library/library.pqp"
     shell:
         "TargetedFileConverter -in {input} -out {output}"
+

@@ -1,5 +1,5 @@
 # Obtain run_ids from centroided DIA mzXML files in dia_data folder
-run_ids, = glob_wildcards("../data_dia/{mzxml}.mzXML")
+run_ids, = glob_wildcards("../data_dia/{mzxml}.mzXML.gz")
 
 # Define DIA-Umpire pseudo-spectra quality groups
 qual_ids = ["Q1","Q2","Q3"]
@@ -10,18 +10,18 @@ rule all:
 
 rule diau:
     input:
-        "../data_dia/{run}.mzXML"
+        "../data_dia/{run}.mzXML.gz"
     output:
         mzXML = temp("../results/diau/{run}.mzXML"),
-        q1 = "../results/diau/{run}_Q1.mgf",
-        q2 = "../results/diau/{run}_Q2.mgf",
-        q3 = "../results/diau/{run}_Q3.mgf"
+        q1 = temp("../results/diau/{run}_Q1.mgf"),
+        q2 = temp("../results/diau/{run}_Q2.mgf"),
+        q3 = temp("../results/diau/{run}_Q3.mgf")
     threads: 4
     resources:
-        mem_mb=lambda wildcards, attempt: attempt * 8192
+        mem_mb=lambda wildcards, attempt: attempt * 16384
     shell:
-        "ln {input} {output.mzXML} && "
-        "java -Xmx8G -jar $(which DIA_Umpire_SE.jar) {output.mzXML} diaumpire_se_Thermo_params.txt"
+        "gunzip -c {input} > {output.mzXML} && "
+        "java -Xmx32G -jar $(which DIA_Umpire_SE.jar) {output.mzXML} diaumpire_se_SCIEX_params.txt"
 
 rule convert:
     input:
