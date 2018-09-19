@@ -1,9 +1,9 @@
 # Obtain run_ids from centroided DIA mzXML files in dia_data folder
-run_ids, = glob_wildcards("../data_dia/{run}.mzXML")
+run_ids, = glob_wildcards("../data_dia/{run}.mzXML.gz")
 
 rule all:
     input:
-        expand("../results/pyprophet/integrated/{run}.osw", run=run_ids)
+        "tric_feature_alignment.done"
 
 rule irt_spectrast_consensus:
     input:
@@ -44,42 +44,52 @@ rule openswath:
     input:
         irt_linear="../data_library/irtkit.TraML",
         irt_nonlinear=rules.irt_filter_swath_assays.output,
-        mzxml="../data_dia/{run}.mzXML",
+        mzxml="../data_dia/{run}.mzXML.gz",
     output:
         osw="../results/openswath/{run}.osw",
-        cache=temp(directory("/tmp/{run}/"))
     threads: 4
     resources:
         mem_mb=lambda wildcards, attempt: attempt * 8192
     shell:
-        "OpenSwathWorkflow -in {input.mzxml} -tr ../data_library/library.pqp -tr_irt {input.irt_linear} -tr_irt_nonlinear {input.irt_nonlinear} -out_osw {output.osw} -threads {threads} -min_upper_edge_dist 1 -mz_extraction_window 30 -mz_extraction_window_unit ppm -mz_extraction_window_ms1 20 -mz_extraction_window_ms1_unit ppm -mz_correction_function regression_delta_ppm -use_ms1_traces -irt_mz_extraction_window 50 -irt_mz_extraction_window_unit ppm -rt_extraction_window 600 -RTNormalization:estimateBestPeptides -RTNormalization:alignmentMethod lowess -RTNormalization:outlierMethod none -Scoring:stop_report_after_feature 5 -Scoring:TransitionGroupPicker:compute_peak_quality false -Scoring:Scores:use_ms1_mi -Scoring:Scores:use_mi_score -threads {threads} -readOptions cache -tempDirectory {output.cache} -batchSize 1000 -ms1_isotopes 3 -Scoring:max_transitions 6 -Scoring:min_transitions 3 -Scoring:max_ms1_isotopes 4 -Scoring:min_ms1_isotopes 2" # -enable_uis_scoring
+        "OpenSwathWorkflow -in {input.mzxml} -tr ../data_library/library.pqp -tr_irt {input.irt_linear} -tr_irt_nonlinear {input.irt_nonlinear} -out_osw {output.osw} -threads {threads} -min_upper_edge_dist 1 -mz_extraction_window 30 -mz_extraction_window_unit ppm -mz_extraction_window_ms1 20 -mz_extraction_window_ms1_unit ppm -mz_correction_function regression_delta_ppm -use_ms1_traces -irt_mz_extraction_window 50 -irt_mz_extraction_window_unit ppm -rt_extraction_window 600 -RTNormalization:estimateBestPeptides -RTNormalization:alignmentMethod lowess -RTNormalization:outlierMethod none -Scoring:stop_report_after_feature 5 -Scoring:TransitionGroupPicker:compute_peak_quality false -Scoring:Scores:use_ms1_mi -Scoring:Scores:use_mi_score -threads {threads} -readOptions cache -tempDirectory $TMPDIR/ -batchSize 1000 -ms1_isotopes 3 -enable_uis_scoring" #-Scoring:max_transitions 6 -Scoring:min_transitions 3 -Scoring:max_ms1_isotopes 4 -Scoring:min_ms1_isotopes 2"
 
 rule pyprophet_model:
     input:
-        expand("../results/openswath/{run}.osw", run=run_ids)
+        expand("../results/openswath/{run}.osw", run=run_ids),
     params:
         subsample_ratio = lambda wildcards, input: round(1.0/len(input),3)
     output:
         "../results/pyprophet/runspecific/model.osw",
     shell:
-        "pyprophet merge --subsample_ratio={params.subsample_ratio} --out {output} {input} && "
-        "pyprophet score --in {output} --level=ms1ms2"
-        # "pyprophet score --in {output} --level=ms1 && "
-        # "pyprophet score --in {output} --level=transition"
+        "rsync -aq {input} $TMPDIR && "
+        "outdir=$(dirname {output}) && "
+        "pyprophet merge --subsample_ratio={params.subsample_ratio} --out $TMPDIR/model.osw $TMPDIR/*.osw && "
+        "pyprophet score --in $TMPDIR/model.osw --level=ms1 && "
+        "pyprophet score --in $TMPDIR/model.osw --level=ms1ms2 && "
+        "pyprophet score --in $TMPDIR/model.osw --level=transition && "
+        "rsync -aq $TMPDIR/model.osw {output} && "
+        "rsync -aq $TMPDIR/*.pdf $outdir/reports/"
 
 rule pyprophet_apply:
     input:
-        osw = rules.openswath.output.osw,
+        osw = rules.openswath.output,
         model = rules.pyprophet_model.output
     output:
         osw = "../results/pyprophet/runspecific/{run}.osw",
         oswr = "../results/pyprophet/runspecific/{run}.oswr"
     shell:
-        "pyprophet score --in {input.osw} --out {output.osw} --apply_weights {input.model} --level=ms1ms2 && "
-        # "pyprophet score --in {output.osw} --apply_weights {input.model} --level=ms1 && "
-        # "pyprophet score --in {output.osw} --apply_weights {input.model} --level=transition && "
-        # "pyprophet ipf --no-ipf_ms1_scoring --in {output.osw} && "
-        "pyprophet reduce --in {output.osw} --out {output.oswr}"
+        "rsync -aq {input.model} {input.osw} $TMPDIR && "
+        "tmposw=$TMPDIR/$(basename {input.osw}) && "
+        "tmposwr=$TMPDIR/$(basename {input.osw})r && "
+        "outdir=$(dirname {output.osw}) && "
+        "pyprophet score --in $tmposw --apply_weights $TMPDIR/model.osw --level=ms1 && "
+        "pyprophet score --in $tmposw --apply_weights $TMPDIR/model.osw --level=ms1ms2 && "
+        "pyprophet score --in $tmposw --apply_weights $TMPDIR/model.osw --level=transition && "
+        "pyprophet ipf --no-ipf_ms1_scoring --no-ipf_ms2_scoring --in $tmposw && "
+        "pyprophet reduce --in $tmposw --out $tmposwr && "
+        "rsync -aq $tmposw {output.osw} && "
+        "rsync -aq $tmposwr {output.oswr} &&"
+        "rsync -aq $TMPDIR/*.pdf $outdir/reports/"
 
 rule pyprophet_global:
     input:
@@ -88,16 +98,44 @@ rule pyprophet_global:
     output:
         "../results/pyprophet/global/model.oswr"
     shell:
-        "pyprophet merge --template {input.template} --out {output} {input.oswr} && "
-        "pyprophet peptide --context=global --in {output} && "
-        "pyprophet protein --context=global --in {output}"
+        "rsync -aq {input.template} {input.oswr} $TMPDIR && "
+        "outdir=$(dirname {output}) && "
+        "pyprophet merge --template $TMPDIR/model.osw --out $TMPDIR/model.oswr $TMPDIR/*.oswr && "
+        "pyprophet peptide --context=global --in $TMPDIR/model.oswr && "
+        "pyprophet protein --context=global --in $TMPDIR/model.oswr && "
+        "rsync -aq $TMPDIR/model.oswr {output} && "
+        "rsync -aq $TMPDIR/*.pdf $outdir/reports/"
 
 rule pyprophet_backpropagate:
     input:
         osw = rules.pyprophet_apply.output.osw,
         model = rules.pyprophet_global.output
     output:
-        "../results/pyprophet/integrated/{run}.osw"
+        osw = "../results/pyprophet/integrated/{run}.osw"
     shell:
-        "pyprophet backpropagate --apply_scores {input.model} --in {input.osw}  --out {output} && "
-        "pyprophet export --in {output}"
+        "rsync -aq {input.osw} {input.model} $TMPDIR && "
+        "tmposw=$TMPDIR/$(basename {input.osw}) && "
+        "outdir=$(dirname {output}) && "
+        "pyprophet backpropagate --apply_scores $TMPDIR/model.oswr --in $tmposw && "
+        "pyprophet export --in $tmposw && "
+        "rsync -aq $tmposw {output}"
+
+rule tric_prepare:
+    input:
+        rules.pyprophet_backpropagate.output
+    output:
+        "../results/tric/{run}.mzXML.gz.tsv"
+    shell:
+        "rsync -aq {input} $TMPDIR && "
+        "pyprophet export --in=$TMPDIR/$(basename {input}) && mv $(basename {output}) {output}"
+
+rule tric_feature_alignment:
+    input:
+        expand("../results/tric/{run}.mzXML.gz.tsv", run=run_ids)
+    output:
+        long="../results/tric/feature_alignment.tsv",
+        matrix="../results/tric/feature_alignment_matrix.tsv",
+        check=temp(touch("tric_feature_alignment.done"))
+    shell:
+        "feature_alignment.py --in {input} --out {output.long} --out_matrix {output.matrix} --method LocalMST --realign_method lowess_cython --max_rt_diff 60 --mst:useRTCorrection True --mst:Stdev_multiplier 3.0 --fdr_cutoff 0.01 --max_fdr_quality 0.05"
+
