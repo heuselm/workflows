@@ -16,8 +16,11 @@
 ````
 
 - Copy your DIA files to ``dia_data``.
-- Edit the parameters in ``wf_diau``, ``wf_library`` and ``wf_openswath`` if necessary.
+- Copy your DDA files to ``dda_data``.
+- Edit the parameters in ``params`` if necessary.
 - Execute the full workflow:
 ````
-    snakemake -j4
+    snakemake --snakefile Snakemake.diau -j4
+    snakemake --snakefile Snakemake.library -j4
+    snakemake --snakefile Snakemake.openswath -j4
 ````
