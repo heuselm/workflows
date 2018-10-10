@@ -15,8 +15,8 @@
     docker run --name osw_wf --rm -v workflows:/data -i -t openswath/develop
 ````
 
-- Copy your DIA files to ``dia_data``.
-- Copy your DDA files to ``dda_data``.
+- Copy your DIA files to ``data_dia``.
+- Copy your DDA files to ``data_dda``.
 - Edit the parameters in ``params`` if necessary.
 - Execute the full workflow:
 ````
