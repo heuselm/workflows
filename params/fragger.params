@@ -2,7 +2,7 @@ database_name = results/library/library.fasta
 num_threads = 4                        # 0=poll CPU to set num threads; else specify num threads directly (max 64)
 
 precursor_mass_tolerance = 20.00
-precursor_mass_units = 0               # 0=Daltons, 1=ppm
+precursor_mass_units = 1               # 0=Daltons, 1=ppm
 precursor_true_tolerance = 20.00
 precursor_true_units = 1               # 0=Daltons, 1=ppm
 fragment_mass_tolerance = 20.00
