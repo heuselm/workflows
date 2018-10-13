@@ -3,99 +3,104 @@ run_ids, = glob_wildcards("data_dda/{run}.mzXML")
 
 rule all:
     input:
-        global_target_pqp =  expand("results/library/{run}_global_pqp.tsv", run=run_ids),
+        global_target_pqp =  expand("results/library/easypqp/{run}_global_pqp.tsv", run=run_ids),
         pqp = "data_library/library.pqp"
 
-rule decoydb:
+rule index:
     input:
         "data_library/library.fasta"
     output:
-        "results/library/library.fasta"
+        directory("results/library/tide-index")
+    params:
+        tidemods = "C+57.02146,2M+15.9949,1STY+79.966331",
+        tidemods_cterm = "\"\"",
+        tidemods_nterm = "1X+42.010565",
+        cruxdir = "results/library/tide-index"
     singularity:
         "develop.simg"
     shell:
-        "DecoyDatabase -in {input} -out {output}"
+        "crux tide-index --output-dir {params.cruxdir} --overwrite T --mods-spec {params.tidemods} --cterm-peptide-mods-spec {params.tidemods_cterm} --nterm-peptide-mods-spec {params.tidemods_nterm} {input} {output}"
 
-rule spectra_link:
+rule tide:
     input:
-        "data_dda/{run}.mzXML"
+        index = rules.index.output,
+        mzxml = "data_dda/{run}.mzXML"
     output:
-        "results/library/{run}.mzXML"
-    singularity:
-        "develop.simg"
-    shell:
-        "ln {input} {output}"
-
-rule msfragger:
-    input:
-        fasta = rules.decoydb.output,
-        mzxml = rules.spectra_link.output
-    output:
-        "results/library/{run}.pepXML"
+        "results/library/tide-search/{run}.tide-search.target.txt",
+        "results/library/tide-search/{run}.tide-search.decoy.txt"
+    params:
+        cruxdir = "results/library/tide-search",
+        run = "{run}"
     singularity:
         "develop.simg"
     threads: 4
-    resources:
-        mem_mb=lambda wildcards, attempt: attempt * 8192
     shell:
-        "java -Xmx8G -jar MSFragger-20171106.jar params/fragger.params {input.mzxml}"
+        "crux tide-search --output-dir {params.cruxdir} --overwrite T --compute-sp T --precursor-window 20 --precursor-window-type ppm --mz-bin-width 0.02 --mz-bin-offset 0.0 --top-match 1 --fileroot {params.run} --num-threads {threads} {input.mzxml} {input.index}"
 
-rule peptideprophet:
+rule percolator:
     input:
-        fasta = rules.decoydb.output,
-        pepxml = rules.msfragger.output
+        fasta = rules.index.input,
+        target_psms = expand("results/library/tide-search/{run}.tide-search.target.txt", run=run_ids),
+        decoy_psms = expand("results/library/tide-search/{run}.tide-search.decoy.txt", run=run_ids)
     output:
-        "results/library/interact-{run}.pepXML"
+        psms = "results/library/percolator/percolator.target.psms.txt",
+        peptides = "results/library/percolator/percolator.target.peptides.txt",
+        proteins = "results/library/percolator/percolator.target.proteins.txt",
+        log = "results/library/percolator/percolator.log.txt",
+        runindex = "results/library/percolator/percolator.runindex.txt"
+    params:
+        cruxdir = "results/library/percolator",
+        subset_max_train = 100000
     singularity:
         "develop.simg"
     shell:
-        "InteractParser {output} {input.pepxml} -D{input.fasta} && PeptideProphetParser {output} ACCMASS NONPARAM PPM DECOY=DECOY_"
-
-rule iprophet:
-    input:
-        fasta = rules.decoydb.input,
-        pepxml = rules.peptideprophet.output
-    output:
-        "results/library/iprophet-{run}.pepXML"
-    singularity:
-        "develop.simg"
-    threads: 1
-    shell:
-        "InterProphetParser DECOY=DECOY_ THREADS={threads} {input.pepxml} {output} && RefreshParser {output} {input.fasta}"
+        "crux percolator --output-dir {params.cruxdir} --overwrite T --picked-protein {input.fasta} --subset-max-train {params.subset_max_train} --quick-validation T {input.target_psms} {input.decoy_psms} && "
+        "echo 'file_idx filename' > {output.runindex} && "
+        "cat {output.log} | grep 'INFO: Assigning index' | cut -d' ' -f 4,6  | cut -d'.' -f 1,2 >> {output.runindex}"
 
 rule easypqp:
     input:
-        pepxml = expand("results/library/iprophet-{run}.pepXML", run=run_ids),
-        mzxml = expand("results/library/{run}.mzXML", run=run_ids),
+        runindex = rules.percolator.output.runindex,
+        psms = rules.percolator.output.psms,
+        peptides = rules.percolator.output.peptides,
+        proteins = rules.percolator.output.proteins,
+        mzxml = expand("data_dda/{run}.mzXML", run=run_ids),
     output:
-        temp(touch("easypqp.done"))
+        temp(touch("results/library/easypqp/easypqp.done"))
+    params:
+        tidemods = rules.index.params.tidemods,
+        tidemods_cterm = rules.index.params.tidemods_cterm,
+        tidemods_nterm = rules.index.params.tidemods_nterm,
+        outputdir = "results/library/easypqp",
+        psm_fdr_threshold = 0.01,
+        peptide_fdr_threshold = 0.01,
+        protein_fdr_threshold = 0.01
     singularity:
         "develop.simg"
-    params:
-        library_modifications = "params/library_modifications.params",
-        fdr_threshold = 0.01
     shell:
-        "python3 scripts/easypqp.py {params.library_modifications} {params.fdr_threshold} {input.pepxml} {input.mzxml}"
+        "python3 scripts/easypqp.py {params.tidemods} {params.tidemods_cterm} {params.tidemods_nterm} {input.runindex} {input.psms} {params.psm_fdr_threshold} {input.peptides} {params.peptide_fdr_threshold} {input.proteins} {params.protein_fdr_threshold} {params.outputdir} {input.mzxml}"
 
 rule global_target_pqp:
     input:
-        iRT = "easypqp.done"
+        iRT = rules.easypqp.output
     params:
-        peaks = "results/library/{run}_global_peaks.tsv"
+        peaks = "results/library/easypqp/{run}_global_peaks.tsv",
+        # unimod = "params/unimod_phospho.xml"
     output:
-        temp("results/library/{run}_global_pqp.tsv")
+        temp("results/library/easypqp/{run}_global_pqp.tsv")
     singularity:
         "develop.simg"
     shell:
         "OpenSwathAssayGenerator -in {params.peaks} -out {output}"
+        # "OpenSwathAssayGenerator -in {params.peaks} -out {output} -enable_ipf -unimod_file {params.unimod} -disable_identification_ms2_precursors -disable_identification_specific_losses"
 
 rule global_combined_pqp:
     input:
-        expand("results/library/{run}_global_pqp.tsv", run=run_ids)
+        expand("results/library/easypqp/{run}_global_pqp.tsv", run=run_ids)
     output:
-        temp("results/library/combined_global_pqp.tsv")
+        temp("results/library/easypqp/combined_global_pqp.tsv")
     shell:
-        "awk 'BEGIN {{ FS=\"\t\"; OFS=\"\t\" }} FNR>1 || NR==1 {{print $1,$2,$3,$4,$5,$6,$7,$8,$14,$16,$17}}' {input} > {output}"
+        "awk 'BEGIN {{ FS=\"\t\"; OFS=\"\t\" }} FNR>1 || NR==1 {{print $1,$2,$3,$4,$5,$6,$7,$8,$14,$16,$17,$18,$23,$24,$25,$26,$27}}' {input} > {output}"
 
 rule global_combined_decoy_pqp:
     input:

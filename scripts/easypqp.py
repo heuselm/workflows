@@ -9,88 +9,112 @@ from sklearn import preprocessing
 import statsmodels.api as sm
 from scipy.interpolate import interp1d
 
-# pepXML parsing
-import xml.etree.ElementTree as ET
-
 # mzML parsing
-# import pymzml
 import pyopenms as po
 
-def read_pepxml(infile, fdr_threshold):
-  peptides = []
-  namespaces = {'pepxml_ns': "http://regis-web.systemsbiology.net/pepXML"}
-  ET.register_namespace('', "http://regis-web.systemsbiology.net/pepXML")
-  tree = ET.parse(infile)
-  root = tree.getroot()
+def parse_tidemods(mods, term):
+  mdb = po.ModificationsDB()
+  modification_dictionary = []
+  if mods != "":
+    for mod in mods.split(','):
+      if '+' in mod:
+        sign = '+'
+      elif '-' in mod:
+        sign = '-'
+      else:
+        sys.exit("Error: Could not parse modifications.")
 
-  fdr = {}
-  for error_point in root.findall('.//pepxml_ns:error_point', namespaces):
-      error = float(error_point.attrib['error'])
-      min_prob = float(error_point.attrib['min_prob'])
-      fdr[error] = min_prob
+      # Check specificity
+      specificity, mass = mod.split(sign)
+      # Round mass
+      mass = round(float(mass),2)
+      # Treat static modifications differently
+      staticmod = True
+      if re.findall('\d+', specificity) != []:
+        specificity = ''.join([i for i in specificity if not i.isdigit()])
+        staticmod = False
 
-  prob_threshold = float(fdr[min(fdr.keys(), key=lambda k: abs(k-fdr_threshold))])
+      # Replace wild card
+      if specificity == 'X':
+        specificity = 'ARNDCEQGHILKMFPSTWYV'
 
-  for msms_run_summary in root.findall('.//pepxml_ns:msms_run_summary', namespaces):
-      base_name = os.path.basename(msms_run_summary.attrib['base_name'])
-      for spectrum_query in msms_run_summary.findall('.//pepxml_ns:spectrum_query', namespaces):
-        index = spectrum_query.attrib['index']
-        start_scan = spectrum_query.attrib['start_scan']
-        end_scan = spectrum_query.attrib['end_scan']
-        assumed_charge = spectrum_query.attrib['assumed_charge']
-        retention_time_sec = spectrum_query.attrib['retention_time_sec']
+      # Iterate over each residue
+      for residue in specificity:
+        if staticmod:
+          residue_tide = residue
+        else:
+          if sign == '+':
+            residue_tide = residue + "[" + str(mass) + "]"
+          else:
+            residue_tide = residue + "[" + sign + str(mass) + "]"
 
-        for search_result in spectrum_query.findall(".//pepxml_ns:search_result", namespaces):
-          for search_hit in search_result.findall(".//pepxml_ns:search_hit", namespaces):
-            hit_rank = search_hit.attrib['hit_rank']
+        if term == 'c':
+          rm = mdb.getBestModificationByDiffMonoMass(mass, 0.02, residue, po.ResidueModification.TermSpecificity.C_TERM)
+        elif term == 'n':
+          rm = mdb.getBestModificationByDiffMonoMass(mass, 0.02, residue, po.ResidueModification.TermSpecificity.N_TERM)
+        elif term == '':
+          rm = mdb.getBestModificationByDiffMonoMass(mass, 0.02, residue, po.ResidueModification.TermSpecificity.ANYWHERE)
 
-            # parse either peptide or modified peptide
-            peptide = search_hit.attrib['peptide']
-            protein = search_hit.attrib['protein']
-            num_tot_proteins = int(search_hit.attrib['num_tot_proteins'])
+        if term == 'c':
+          residue_unimod = residue + ".(UniMod:" + str(rm.getUniModRecordId()) + ")"
+        elif term == 'n':
+          residue_unimod = ".(UniMod:" + str(rm.getUniModRecordId()) + ")" + residue
+        elif term == '':
+          residue_unimod = residue + "(UniMod:" + str(rm.getUniModRecordId()) + ")"
 
-            if search_hit.find('.//pepxml_ns:modification_info', namespaces):
-              modified_peptide = search_hit.find('.//pepxml_ns:modification_info', namespaces).attrib['modified_peptide']
-            else:
-              modified_peptide = peptide
+        modification_dictionary.append({'tide': residue_tide, 'unimod': residue_unimod, 'unmodified': residue})
+    return pd.DataFrame(modification_dictionary)
+  else:
+    return pd.DataFrame()
 
-            probability = float(search_hit.find('.//pepxml_ns:interprophet_result', namespaces).attrib['probability'])
+def remove_brackets(x):
+  return re.sub(r'\[.*\]', '', x)
 
-            if probability >= prob_threshold and num_tot_proteins == 1:
-              peptides.append({'base_name': base_name, 'index': int(index), 'start_scan': int(start_scan), 'end_scan': int(end_scan), 'assumed_charge': int(assumed_charge), 'retention_time_sec': float(retention_time_sec), 'hit_rank': int(hit_rank), 'peptide': peptide, 'modified_peptide': modified_peptide, 'protein': protein, 'probability': float(probability)})
+def read_percolator_psms(infile, runindex, fdr_threshold):
+  table = pd.read_csv(infile, sep="\t")
+  runs = pd.read_csv(runindex, sep=" ")
 
-  df = pd.DataFrame(peptides)
-  return(df)
+  psms = pd.merge(runs, table, on='file_idx')
+
+  # Select proteotypic peptides only
+  psms = psms[~psms['protein id'].str.contains(',')]
+
+  # Select psms below q-value threshold
+  psms = psms[psms['percolator q-value'] < fdr_threshold]
+
+  return psms
+
+def read_percolator_peptides(infile, fdr_threshold):
+  peptides = pd.read_csv(infile, sep="\t")
+
+  # Select peptides below q-value threshold
+  peptides = peptides[peptides["percolator q-value"] < fdr_threshold]['sequence'].unique()
+
+  return peptides
+
+def read_percolator_proteins(infile, fdr_threshold):
+  proteins = pd.read_csv(infile, sep="\t")
+
+  # Select proteins below q-value threshold
+  proteins = proteins[proteins["q-value"] < fdr_threshold]['ProteinId'].unique()
+
+  return proteins
 
 def lowess(run, reference_run):
-  dfm = pd.merge(run, reference_run[['modified_peptide','assumed_charge','irt']])
+  dfm = pd.merge(run, reference_run[['sequence','charge','irt']])
 
-  print("Info: Peptide overlap between run and reference: %s." % dfm.shape[0])
+  print("INFO: Peptide overlap between run and reference: %s." % dfm.shape[0])
 
   # Fit lowess model
-  lwf = sm.nonparametric.lowess(dfm['irt'], dfm['retention_time_sec'], frac=.66)
+  lwf = sm.nonparametric.lowess(dfm['irt'], dfm['rt'], frac=.66)
   lwf_x = list(zip(*lwf))[0]
   lwf_y = list(zip(*lwf))[1]
   lwi = interp1d(lwf_x, lwf_y, bounds_error=False)
 
   # Apply lowess model
-  run['irt'] = lwi(run['retention_time_sec'])
+  run['irt'] = lwi(run['rt'])
 
   return run
-
-# def read_mzml(mzml_path, scan_ids):
-#   msrun = pymzml.run.Reader(mzml_path)
-
-#   peaks_list = []
-#   for scan_id in scan_ids:
-#     spectrum = msrun[scan_id]
-#     peaks = pd.DataFrame(spectrum.peaks, columns=['product_mz', 'intensity'])
-#     peaks['precursor_mz'] = spectrum['precursors'][0]['mz']
-#     peaks['start_scan'] = scan_id
-#     peaks_list.append(peaks)
-
-#   transitions = pd.concat(peaks_list)
-#   return(transitions)
 
 def read_mzxml(mzxml_path, scan_ids):
   fh = po.MzXMLFile()
@@ -98,10 +122,12 @@ def read_mzxml(mzxml_path, scan_ids):
   input_map = po.MSExperiment()
   fh.load(mzxml_path, input_map)
 
+  rt_list = []
   peaks_list = []
   for scan_id in scan_ids:
 
-    spectrum = input_map.getSpectrum(scan_id - 1)
+    spectrum = input_map.getSpectrum(int(scan_id) - 1)
+    rt_list.append(spectrum.getRT())
 
     product_mzs = []
     intensities = []
@@ -109,80 +135,112 @@ def read_mzxml(mzxml_path, scan_ids):
       product_mzs.append(peak.getMZ())
       intensities.append(peak.getIntensity())
 
-    peaks = pd.DataFrame({'product_mz': product_mzs, 'intensity': intensities})
+    peaks = pd.DataFrame({'filename': mzxml_path,'product_mz': product_mzs, 'intensity': intensities})
     peaks['precursor_mz'] = spectrum.getPrecursors()[0].getMZ()
-    peaks['start_scan'] = scan_id
+    peaks['scan'] = scan_id
     peaks_list.append(peaks)
 
   transitions = pd.concat(peaks_list)
-  return(transitions)
+  rts = pd.DataFrame({'filename': mzxml_path, 'scan': scan_ids, 'rt': rt_list})
+  return transitions, rts
 
 # Parse input arguments
 pepxmls = []
 mzxmls = []
-library_modifications = sys.argv[1]
-fdr_threshold = float(sys.argv[2])
-for arg in sys.argv[3:]:
-  if 'pepXML' in arg:
-    pepxmls.append(arg)
+tidemods = sys.argv[1]
+tidemods_cterm = sys.argv[2]
+tidemods_nterm = sys.argv[3]
+percolator_runindex = sys.argv[4]
+percolator_psm_report = sys.argv[5]
+psm_fdr_threshold = float(sys.argv[6])
+percolator_peptide_report = sys.argv[7]
+peptide_fdr_threshold = float(sys.argv[8])
+percolator_protein_report = sys.argv[9]
+protein_fdr_threshold = float(sys.argv[10])
+outputdir = sys.argv[11] + "/"
+
+for arg in sys.argv[12:]:
   if 'mzXML' in arg:
     mzxmls.append(arg)
 
-# Parse all pepXML files
-pepid_list = []
-for pepxml in pepxmls:
-  print("Reading file %s." % pepxml)
-  pepid_file = read_pepxml(pepxml, fdr_threshold)
-  pepid_list.append(pepid_file)
-pepid = pd.concat(pepid_list).reset_index(drop=True)
+# Parse Percolator reports
+peptides = read_percolator_peptides(percolator_peptide_report, peptide_fdr_threshold)
+print("INFO: Unique peptides below q-value threshold (%s): %s" % (peptide_fdr_threshold, len(peptides)))
+proteins = read_percolator_proteins(percolator_protein_report, protein_fdr_threshold)
+print("INFO: Unique proteins below q-value threshold (%s): %s" % (protein_fdr_threshold, len(proteins)))
 
-# Patch TPP modifications
-for idx, modification in pd.read_csv(library_modifications).iterrows():
-  print("Replace TPP modification '%s' with UniMod modification '%s'" % (modification['TPP'], modification['UniMod']))
-  pepid['modified_peptide'] = pepid['modified_peptide'].str.replace(re.escape(modification['TPP']), modification['UniMod'])
+psms = read_percolator_psms(percolator_psm_report, percolator_runindex, psm_fdr_threshold)
+
+# Filter psms to all thresholds
+psms = psms[(psms['sequence'].isin(peptides)) & (psms['protein id'].isin(proteins))]
+print("INFO: Filtered redundant psms below q-value threshold (%s): %s" % (psm_fdr_threshold, psms.shape[0]))
+
+# Patch Tide modifications
+mods_nterm = parse_tidemods(tidemods_nterm,'n')
+mods_cterm = parse_tidemods(tidemods_cterm,'c')
+mods_residue = parse_tidemods(tidemods,'')
+
+mods = pd.concat([mods_nterm, mods_cterm, mods_residue])
+
+psms['unmodified_sequence'] = psms['sequence']
+for idx, modification in mods.iterrows():
+  print("Replace Tide modification '%s' with UniMod modification '%s'" % (modification['tide'], modification['unimod']))
+  psms['unmodified_sequence'] = psms['unmodified_sequence'].str.replace(re.escape(modification['tide']), modification['unmodified'])
+  psms['sequence'] = psms['sequence'].str.replace(re.escape(modification['tide']), modification['unimod'])
+
+# Parse mzXML to retrieve peaks and metadata and store results in peak files
+transitions = {}
+rts = []
+for mzxml in mzxmls:
+  scans = psms[psms['filename'] == mzxml]['scan']
+  print("INFO: Parsing file %s and extracting %s psms." % (mzxml, scans.shape[0]))
+  transitions, rtdf = read_mzxml(mzxml, scans)
+  transitions.to_pickle(outputdir + os.path.basename(os.path.splitext(mzxml)[0]+"_peaks.pkl"))
+  rts.append(rtdf)
+rtr = pd.concat(rts)
+
+psms = pd.merge(psms, rtr, on=['filename','scan'])
 
 # Generate set of best replicate identifications per run
-pepidr = pepid.loc[pepid.groupby(['base_name','modified_peptide','assumed_charge'])['probability'].idxmax()].sort_index()
+psmsr = psms.loc[psms.groupby(['filename','sequence','charge'])['percolator q-value'].idxmin()].sort_index()
 
 # Select reference run
-pepidr_stats = pepidr.groupby('base_name')[['modified_peptide']].count().reset_index()
-print(pepidr_stats)
-reference_run_base_name = pepidr_stats.loc[pepidr_stats['modified_peptide'].idxmax()]['base_name']
+psmsr_stats = psmsr.groupby('filename')[['sequence']].count().reset_index()
+print(psmsr_stats)
+reference_run_filename = psmsr_stats.loc[psmsr_stats['sequence'].idxmax()]['filename']
 
-reference_run = pepidr[pepidr['base_name'] == reference_run_base_name]
-align_runs = pepidr[pepidr['base_name'] != reference_run_base_name]
+reference_run = psmsr[psmsr['filename'] == reference_run_filename]
+align_runs = psmsr[psmsr['filename'] != reference_run_filename]
 
 # Normalize RT of reference run
 min_max_scaler = preprocessing.MinMaxScaler()
-reference_run['irt'] = min_max_scaler.fit_transform(reference_run[['retention_time_sec']])*100
+reference_run['irt'] = min_max_scaler.fit_transform(reference_run[['rt']])*100
 
 # Normalize RT of all runs against reference
-aligned_runs = align_runs.groupby('base_name').apply(lambda x: lowess(x, reference_run)).dropna()
-pepida = pd.concat([reference_run, aligned_runs]).reset_index(drop=True)
+aligned_runs = align_runs.groupby('filename').apply(lambda x: lowess(x, reference_run)).dropna()
+psmsa = pd.concat([reference_run, aligned_runs]).reset_index(drop=True)
 
 # Generate set of non-redundant global best replicate identifications
-pepidb = pepida.loc[pepida.groupby(['modified_peptide','assumed_charge'])['probability'].idxmax()].sort_index()
+psmsb = psmsa.loc[psmsa.groupby(['sequence','charge'])['percolator q-value'].idxmin()].sort_index()
 
-# Prepare ID mzML pairing
-peak_files = pd.DataFrame({'path': mzxmls})
-peak_files['base_name'] = peak_files['path'].apply(lambda x: os.path.splitext(os.path.basename(x))[0])
+# Write peak files
+for mzxml in mzxmls:
+  print("INFO: Generating peak reports for file %s." % mzxml)
+  meta_global = psmsb[psmsb['filename'] == mzxml]
 
-# Parse mzXML to retrieve peaks and store results in peak files
-for idx, peak_file in peak_files.iterrows():
-  print("Parsing file %s." % peak_file['path'])
-  meta_run = pepida[pepida['base_name'] == peak_file['base_name']]
-  meta_global = pepidb[pepidb['base_name'] == peak_file['base_name']]
-  peaks = read_mzxml(peak_file['path'], meta_run['start_scan'].tolist())
-  
-  # Generate run-specific PQP files for OpenSWATH alignment
-  if "_Q1" in peak_file['base_name']:
-    run_pqp = pd.merge(meta_run, peaks, on='start_scan')[['precursor_mz','product_mz','intensity','irt','protein','peptide','modified_peptide','assumed_charge']]
+  transitions = pd.read_pickle(outputdir + os.path.basename(os.path.splitext(mzxml)[0]+"_peaks.pkl"))
+  os.remove(outputdir + os.path.basename(os.path.splitext(mzxml)[0]+"_peaks.pkl"))
+
+    # Generate run-specific PQP files for OpenSWATH alignment
+  if "_Q1" in mzxml:
+    meta_run = psmsa[psmsa['filename'] == mzxml]
+    run_pqp = pd.merge(meta_run, transitions, on='scan')[['precursor_mz','product_mz','intensity','irt','protein id','unmodified_sequence','sequence','charge']]
     run_pqp.columns = ['PrecursorMz','ProductMz','LibraryIntensity','NormalizedRetentionTime','ProteinId','PeptideSequence','ModifiedPeptideSequence','PrecursorCharge']
-    run_pqp_path = os.path.splitext(peak_file['path'])[0]+"_run_peaks.tsv"
+    run_pqp_path = outputdir + os.path.basename(os.path.splitext(mzxml)[0]+"_run_peaks.tsv")
     run_pqp.to_csv(run_pqp_path, sep="\t", index=False)
 
   # Generate global non-redundant PQP files
-  global_pqp = pd.merge(meta_global, peaks, on='start_scan')[['precursor_mz','product_mz','intensity','irt','protein','peptide','modified_peptide','assumed_charge']]
+  global_pqp = pd.merge(meta_global, transitions, on='scan')[['precursor_mz','product_mz','intensity','irt','protein id','unmodified_sequence','sequence','charge']]
   global_pqp.columns = ['PrecursorMz','ProductMz','LibraryIntensity','NormalizedRetentionTime','ProteinId','PeptideSequence','ModifiedPeptideSequence','PrecursorCharge']
-  global_pqp_path = os.path.splitext(peak_file['path'])[0]+"_global_peaks.tsv"
+  global_pqp_path = outputdir + os.path.basename(os.path.splitext(mzxml)[0]+"_global_peaks.tsv")
   global_pqp.to_csv(global_pqp_path, sep="\t", index=False)

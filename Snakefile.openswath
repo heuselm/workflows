@@ -3,7 +3,8 @@ run_ids, = glob_wildcards("data_dia/{run}.mzXML")
 
 rule all:
     input:
-        "tric_feature_alignment.done"
+        tsvs = expand("results/tric/{run}.mzXML.tsv", run=run_ids),
+        matrix = "results/tric/feature_alignment_matrix.tsv"
 
 rule run_target_pqp:
     input:
@@ -55,7 +56,7 @@ rule openswath:
     resources:
         mem_mb=lambda wildcards, attempt: attempt * 8192
     shell:
-        "OpenSwathWorkflow -in {input.mzxml} -tr data_library/library.pqp -tr_irt {input.irt_linear} -tr_irt_nonlinear {input.irt_nonlinear} -out_osw {output.osw} -threads {threads} -min_upper_edge_dist 1 -mz_extraction_window 30 -mz_extraction_window_unit ppm -mz_extraction_window_ms1 20 -mz_extraction_window_ms1_unit ppm -mz_correction_function regression_delta_ppm -use_ms1_traces -irt_mz_extraction_window 50 -irt_mz_extraction_window_unit ppm -rt_extraction_window 600 -RTNormalization:estimateBestPeptides -RTNormalization:alignmentMethod lowess -RTNormalization:outlierMethod none -Scoring:stop_report_after_feature 5 -Scoring:TransitionGroupPicker:compute_peak_quality false -Scoring:Scores:use_ms1_mi -Scoring:Scores:use_mi_score -threads {threads} -readOptions cache -tempDirectory {output.cache} -batchSize 1000 -ms1_isotopes 3 -Scoring:max_transitions 6 -Scoring:min_transitions 3 -Scoring:max_ms1_isotopes 4 -Scoring:min_ms1_isotopes 2" # -enable_uis_scoring
+        "OpenSwathWorkflow -in {input.mzxml} -tr data_library/library.pqp -tr_irt {input.irt_linear} -tr_irt_nonlinear {input.irt_nonlinear} -out_osw {output.osw} -threads {threads} -min_upper_edge_dist 1 -mz_extraction_window 30 -mz_extraction_window_unit ppm -mz_extraction_window_ms1 20 -mz_extraction_window_ms1_unit ppm -mz_correction_function regression_delta_ppm -use_ms1_traces -irt_mz_extraction_window 50 -irt_mz_extraction_window_unit ppm -rt_extraction_window 600 -RTNormalization:estimateBestPeptides -RTNormalization:alignmentMethod lowess -RTNormalization:outlierMethod none -Scoring:stop_report_after_feature 5 -Scoring:TransitionGroupPicker:compute_peak_quality false -Scoring:Scores:use_ms1_mi -Scoring:Scores:use_mi_score -threads {threads} -readOptions cache -tempDirectory {output.cache} -batchSize 1000 -ms1_isotopes 3" # -enable_uis_scoring
 
 rule pyprophet_model:
     input:
@@ -85,7 +86,7 @@ rule pyprophet_apply:
         "pyprophet score --in {input.osw} --out {output.osw} --apply_weights {input.model} --level=ms1ms2 && "
         # "pyprophet score --in {output.osw} --apply_weights {input.model} --level=ms1 && "
         # "pyprophet score --in {output.osw} --apply_weights {input.model} --level=transition && "
-        # "pyprophet ipf --no-ipf_ms1_scoring --in {output.osw} && "
+        # "pyprophet ipf --no-ipf_ms2_scoring --in {output.osw} && "
         "pyprophet reduce --in {output.osw} --out {output.oswr}"
 
 rule pyprophet_global:
@@ -129,7 +130,6 @@ rule tric_feature_alignment:
     output:
         long="results/tric/feature_alignment.tsv",
         matrix="results/tric/feature_alignment_matrix.tsv",
-        check=temp(touch("tric_feature_alignment.done"))
     singularity:
         "develop.simg"
     shell:
