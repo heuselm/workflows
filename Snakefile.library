@@ -12,9 +12,9 @@ rule index:
     output:
         directory("results/library/tide-index")
     params:
-        tidemods = "C+57.02146,2M+15.9949,1STY+79.966331",
+        tidemods = "C+57.02146,2M+15.9949,2STY+79.966331",
         tidemods_cterm = "\"\"",
-        tidemods_nterm = "1X+42.010565",
+        tidemods_nterm = "\"\"", #"1X+42.010565",
         cruxdir = "results/library/tide-index"
     singularity:
         "develop.simg"
@@ -35,7 +35,7 @@ rule tide:
         "develop.simg"
     threads: 4
     shell:
-        "crux tide-search --output-dir {params.cruxdir} --overwrite T --compute-sp T --precursor-window 20 --precursor-window-type ppm --mz-bin-width 0.02 --mz-bin-offset 0.0 --top-match 1 --fileroot {params.run} --num-threads {threads} {input.mzxml} {input.index}"
+        "crux tide-search --output-dir {params.cruxdir} --overwrite T --compute-sp T --auto-precursor-window --precursor-window 20 --precursor-window-type ppm --auto-mz-bin-width --mz-bin-width 0.02 --mz-bin-offset 0.0 --top-match 1 --fileroot {params.run} --num-threads {threads} {input.mzxml} {input.index}"
 
 rule percolator:
     input:
@@ -91,8 +91,8 @@ rule global_target_pqp:
     singularity:
         "develop.simg"
     shell:
-        "OpenSwathAssayGenerator -in {params.peaks} -out {output}"
-        # "OpenSwathAssayGenerator -in {params.peaks} -out {output} -enable_ipf -unimod_file {params.unimod} -disable_identification_ms2_precursors -disable_identification_specific_losses"
+        # "OpenSwathAssayGenerator -in {params.peaks} -out {output}"
+        "OpenSwathAssayGenerator -in {params.peaks} -out {output} -enable_ipf -unimod_file {params.unimod} -disable_identification_ms2_precursors -disable_identification_specific_losses"
 
 rule global_combined_pqp:
     input:
