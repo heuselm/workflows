@@ -35,7 +35,7 @@ rule tide:
         "develop.simg"
     threads: 4
     shell:
-        "crux tide-search --output-dir {params.cruxdir} --overwrite T --compute-sp T --auto-precursor-window --precursor-window 20 --precursor-window-type ppm --auto-mz-bin-width --mz-bin-width 0.02 --mz-bin-offset 0.0 --top-match 1 --fileroot {params.run} --num-threads {threads} {input.mzxml} {input.index}"
+        "crux tide-search --output-dir {params.cruxdir} --overwrite T --compute-sp T --auto-precursor-window warn --precursor-window 20 --precursor-window-type ppm --auto-mz-bin-width warn --mz-bin-width 0.02 --mz-bin-offset 0.0 --top-match 1 --fileroot {params.run} --num-threads {threads} {input.mzxml} {input.index}"
 
 rule percolator:
     input:

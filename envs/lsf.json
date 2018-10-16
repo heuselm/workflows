@@ -1,7 +1,7 @@
 {
     "__default__" :
     {
-        "nCPUs"     : "1",
+        "nCPUs"     : 1,
         "memory"    : 8192,
         "resources" : "\"rusage[mem=8192,scratch=8192]\"",
         "name"      : "JOBNAME.{rule}.{wildcards}",
@@ -11,17 +11,22 @@
 
     "diau" :
     {
-	"nCPUs"     : "4"
+	"nCPUs"     : 4
     },
 
-    "msfragger" :
+    "tide" :
     {
-	"nCPUs"     : "4"
+	"nCPUs"     : 4
+    },
+
+    "percolator" :
+    {
+        "memory"     : 16384
     },
 
     "openswath" :
     {
-        "nCPUs"     : "4"
+        "nCPUs"     : 4
     }
 }
 
