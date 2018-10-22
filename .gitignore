@@ -102,3 +102,8 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# data and result folders
+data_dia
+data_dda
+results
